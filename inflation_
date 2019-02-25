@@ -1,0 +1,88 @@
+import datetime as dt, pandas as pd
+from bbg import bbg
+blp = bbg.BLP()
+
+blp.bdh('SPX Index', 'PX_LAST')
+
+past_issuance = blp.bsrch('fi:tips issuance')[0]
+blp.bdp(past_issuance, 'PX_LAST')
+
+
+result = bbg.BLPTS(past_issuance, ['PX_LAST', 'DUR_ADJ_MID'])
+result.get()
+result.output
+
+
+blp = bbg.BLP()
+
+class TIPS_Curve:
+    def __init__(self, source='bbg'):
+        self.source = source
+        if source == 'bbg':
+            self.issuance = blp.bsrch('fi:tips issuance')[0]
+            self.fields = {'issue_dt': 'SECURITY_PRICING_DATE',
+                            'name': 'SECURITY_DES',
+                            'comparator_id': 'CLOSEST_MTY_GOVT_BOND_ID',
+                            'comparator_name': 'CLOSEST_MTY_GOVT_BOND_DES',
+                            'comparator_yield_bid': 'GOVT_MTY_BNCHMRK_YLD_BID',
+                            'comparator_yield_ask': 'GOVT_MTY_BNCHMRK_YLD_ASK',
+                            'coupon': 'CPN',
+                            'matu': 'Maturity',
+                            'tao': 'MTY_YEARS',
+                            'issue_tenor': 'YRS_TO_MTY_ISSUE',
+                            'isin': 'ID_ISIN',
+                            'issue_size': 'AMT_ISSUED',
+                            'yield_bid': 'YLD_YTM_BID',
+                            'yield_ask': 'YLD_YTM_ASK'}
+
+            result = bbg.BLPTS(self.issuance, self.fields.values())
+            result.get()
+            self.data = result.output
+            self.data.columns = self.fields.keys()
+            self.data.matu = pd.to_datetime(self.data.matu)
+            self.data.issue_dt = pd.to_datetime(self.data.issue_dt)
+            self.data['active'] = self.data.matu >= dt.date.today()
+            self.data['objects'] = self.data.apply(lambda x: TIPS(id_=x.name, **x), axis=1)
+            # self.data = result.output.T.to_dict()
+
+    def getBondPool(self):
+        insert_bond = self.data.issue_dt.reset_index()
+        insert_bond['action'] = 'add'
+        insert_bond.columns = ['id', 'date', 'action']
+
+        remove_bond = self.data.matu.reset_index()
+        remove_bond['action'] = 'drop'
+        remove_bond.columns = ['id', 'date', 'action']
+
+        events = pd.concat([insert_bond, remove_bond]).sort_values('date')
+
+        from queue import Queue
+        bondPool = []
+        q = Queue()
+        for idx, val in events.iterrows():
+            if val.action == 'add':
+                q.put(val.id)
+            else:
+                q.get(val.id)
+            bondPool.append(list(q.queue))
+
+    def buildTips(self):
+        self.tips_obj = []
+        for key, val in self.data.items():
+            self.tips_obj.append()
+
+class TIPS:
+    def __init__(self, id_, source='bbg', **kwargs):
+        self.id = id_
+        # self.build(source)
+        if source =='bbg':
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+
+self = TIPS_Curve()
+
+
+
+
+
