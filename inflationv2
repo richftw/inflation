@@ -1,0 +1,159 @@
+import datetime as dt, pandas as pd
+from bbg import bbg
+blp = bbg.BLP()
+
+blp.bdh('SPX Index', 'PX_LAST')
+
+past_issuance = blp.bsrch('fi:tips issuance')[0]
+blp.bdp(past_issuance, 'PX_LAST')
+
+
+result = bbg.BLPTS(past_issuance, ['PX_LAST', 'DUR_ADJ_MID'])
+result.get()
+result.output
+
+
+blp = bbg.BLP()
+
+class TIPS_Curve:
+    def __init__(self, source='bbg'):
+        self.source = source
+        if source == 'bbg':
+            self.issuance = blp.bsrch('fi:tips issuance')[0]
+            self.fields = {'issue_dt': 'SECURITY_PRICING_DATE',
+                            'name': 'SECURITY_DES',
+                            'comparator_id': 'CLOSEST_MTY_GOVT_BOND_ID',
+                            'comparator_name': 'CLOSEST_MTY_GOVT_BOND_DES',
+                            'comparator_yield_bid': 'GOVT_MTY_BNCHMRK_YLD_BID',
+                            'comparator_yield_ask': 'GOVT_MTY_BNCHMRK_YLD_ASK',
+                            'coupon': 'CPN',
+                            'matu': 'Maturity',
+                            'tao': 'MTY_YEARS',
+                            'issue_tenor': 'YRS_TO_MTY_ISSUE',
+                            'isin': 'ID_ISIN',
+                            'issue_size': 'AMT_ISSUED',
+                            'yield_bid': 'YLD_YTM_BID',
+                            'yield_mid': 'YLD_YTM_MID',
+                            'yield_ask': 'YLD_YTM_ASK',
+                            'duration': "INFLATION_ADJ_DUR_MID"}
+
+            result = bbg.BLPTS(self.issuance, self.fields.values())
+            result.get()
+            self.data = result.output
+            self.data.columns = self.fields.keys()
+            self.data.matu = pd.to_datetime(self.data.matu)
+            self.data.issue_dt = pd.to_datetime(self.data.issue_dt)
+            self.data['active'] = self.data.matu >= dt.date.today()
+            self.data['objects'] = self.data.apply(lambda x: TIPS(id_=x.name, **x), axis=1)
+
+            bbg_comparators = self.data['comparator_id']
+            result = bbg.BLPTS(bbg_comparators, self.fields.values())
+            result.get()
+            self.data_comp = result.output
+            self.data_comp.columns = self.fields.keys()
+            self.data_comp.matu = pd.to_datetime(self.data_comp.matu)
+            self.data_comp.issue_dt = pd.to_datetime(self.data_comp.issue_dt)
+            self.data_comp['active'] = self.data_comp.matu >= dt.date.today()
+            self.data_comp['objects'] = self.data_comp.apply(lambda x: TIPS(id_=x.name, **x), axis=1)
+
+            self.data['comparator'] = self.data_comp.objects.values
+            # self.data = result.output.T.to_dict()
+
+    def getBondPool(self):
+        insert_bond = self.data.issue_dt.reset_index()
+        insert_bond['action'] = 'add'
+        insert_bond.columns = ['id', 'date', 'action']
+
+        remove_bond = self.data.matu.reset_index()
+        remove_bond['action'] = 'drop'
+        remove_bond.columns = ['id', 'date', 'action']
+
+        events = pd.concat([insert_bond, remove_bond]).sort_values('date')
+
+        from queue import Queue
+        bondPool = []
+        q = Queue()
+        for idx, val in events.iterrows():
+            if val.action == 'add':
+                q.put(val.id)
+            else:
+                q.get(val.id)
+            bondPool.append(self.data.objects.loc[list(q.queue)].tolist())
+
+        self.bondPool= pd.DataFrame(bondPool, index=events.date).loc[:dt.datetime.today()]
+        return self.bondPool
+
+    def buildTips(self):
+        self.tips_obj = []
+        for key, val in self.data.items():
+            self.tips_obj.append()
+
+    def getFwd(self, date):
+        collection = self.bondPool.loc[: date].iloc[-1]
+
+        result = bbg.BLPTS([item.id for item in collection], self.fields.values(),  startDate=date, endDate=date)
+        result.get()
+        data = result.output
+        data.columns = self.fields.keys()
+        self.data.matu = pd.to_datetime(self.data.matu)
+
+
+        data = pd.DataFrame({'dur': [x.duration for x in collection],
+                             'maturity': [x.matu for x in collection],
+                             'tao': [x.tao for x in collection],
+                             'real_yield': [x.yield_mid for x in collection],
+                             'name': [x.name for x in collection], }).dropna()
+
+
+        grpbys = data.groupby(data.maturity.dt.month)
+        jan_grpbys = grpbys.get_group(1)
+        apr_grpbys = grpbys.get_group(4)
+        jul_grpbys = grpbys.get_group(7)
+
+        for item in [jan_grpbys, apr_grpbys, jul_grpbys]:
+            on_the_run = item.drop_duplicates('maturity', keep='last').set_index('maturity')
+            fwd = ((pd.to_numeric(on_the_run.real_yield) * pd.to_numeric(on_the_run.dur)).shift(-1) - \
+                   pd.to_numeric(on_the_run.real_yield) * pd.to_numeric(on_the_run.dur)) / pd.to_numeric(
+                on_the_run.dur).diff().shift(-1)
+
+
+class TIPS:
+    def __init__(self, id_, source='bbg', **kwargs):
+        self.id = id_
+        # self.build(source)
+        if source == 'bbg':
+            self.kwargs = kwargs
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    def get_historical(self):
+        blp = bbg.BLP()
+        self.real_yield = blp.bdh(self.id, 'INFLATION_ADJ_DUR_MID', self.issue_dt, self.matu)
+        self.real_yield = blp.bdh(self.id, 'DUR_ADJ_OAS_MID', self.issue_dt, self.matu)
+
+        # simpleHistoryRequest(self.id, self.kwargs.keys())
+        # result = bbg.BLPTS(self.id, self.kwargs.keys(), **dict(startDate=self.issue_dt, endDate=self.matu))
+        # result.get()
+        # result.output
+
+
+
+self = TIPS_Curve()
+cur = sorted(self.getBondPool().iloc[-1].tolist(), key=lambda x: (x.matu, x.issue_dt) )
+
+data  =  pd.DataFrame({'dur': [x.duration for x in cur],
+                       'maturity':[x.matu for x in cur],
+                       'tao': [x.tao for x in cur],
+                       'real_yield': [x.yield_mid for x in cur],
+                       'name': [x.name for x in cur],}).dropna()
+
+
+for item in [jan_grpbys, apr_grpbys, jul_grpbys]:
+    on_the_run = item.drop_duplicates('maturity', keep='last').set_index('maturity')
+    fwd = ((pd.to_numeric(on_the_run.real_yield) * pd.to_numeric(on_the_run.dur)).shift(-1) - \
+          pd.to_numeric(on_the_run.real_yield) * pd.to_numeric(on_the_run.dur))/pd.to_numeric(on_the_run.dur).diff().shift(-1)
+    pass
+
+jan_grpbys
+
+
